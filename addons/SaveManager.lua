@@ -290,7 +290,6 @@ local SaveManager = {} do
             for i = 1, #list do
                 local file = list[i]
                 if file:sub(-5) == ".json" then
-                    -- i hate this but it has to be done ...
                     local pos = file:find(".json", 1, true)
                     local start = pos
 
@@ -362,18 +361,11 @@ local SaveManager = {} do
     function SaveManager:GetAutoloadConfig()
         SaveManager:CheckFolderTree()
 
-        -- 1. Check for Per-Player Config if enabled
-        local useMultiUser = false
-        if self.Library and self.Library.Toggles.SaveManager_PerPlayerConfig then
-            useMultiUser = self.Library.Toggles.SaveManager_PerPlayerConfig.Value
-        end
-
-        if useMultiUser then
-            self:LoadPlayerConfigs()
-            local localPlayerName = Players.LocalPlayer.Name
-            if self.PlayerConfigs[localPlayerName] and self.PlayerConfigs[localPlayerName] ~= "" then
-                return self.PlayerConfigs[localPlayerName]
-            end
+        -- 1. Check for Per-Player Config
+        self:LoadPlayerConfigs()
+        local localPlayerName = Players.LocalPlayer.Name
+        if self.PlayerConfigs[localPlayerName] and self.PlayerConfigs[localPlayerName] ~= "" then
+            return self.PlayerConfigs[localPlayerName]
         end
 
         -- 2. Fallback to Global Autoload
@@ -395,7 +387,6 @@ local SaveManager = {} do
     function SaveManager:LoadAutoloadConfig()
         SaveManager:CheckFolderTree()
 
-        -- Determine which config to load (User specific or Global)
         local configName = self:GetAutoloadConfig()
         
         if configName ~= "none" then
@@ -412,7 +403,7 @@ local SaveManager = {} do
 
         if target and target ~= "Global" then
             -- Save for specific player
-            self:LoadPlayerConfigs() -- Refresh first
+            self:LoadPlayerConfigs() 
             self.PlayerConfigs[target] = name
             if not self:SavePlayerConfigs() then
                 return false, "write file error (player)"
@@ -570,20 +561,7 @@ local SaveManager = {} do
 
         section:AddDivider()
 
-        --// Multi-User Configs Toggle \\--
-        section:AddToggle("SaveManager_PerPlayerConfig", {
-            Text = "Per-Player Configs",
-            Default = false,
-            Tooltip = "Enable specific autoload configs for different usernames.",
-            Callback = function(val)
-                -- Refresh label when toggled
-                if SaveManager.AutoloadLabel then
-                    SaveManager.AutoloadLabel:SetText("Current autoload config: " .. self:GetAutoloadConfig())
-                end
-            end
-        })
-
-        -- Groupbox for Player Management (Visible only when toggle is on)
+        -- Groupbox for Player Management
         local playerGroup = tab:AddRightGroupbox("Player Management", "users")
         
         playerGroup:AddInput("SaveManager_PlayerInput", { Text = "Username" })
@@ -623,38 +601,7 @@ local SaveManager = {} do
             end
         end)
 
-        -- Link visibility of Player Management group to the toggle
-        -- We rely on the DependencyBox feature if available, or manual handling
-        -- Assuming standard Linoria/Obsidian dependency behavior:
-        if self.Library.Toggles.SaveManager_PerPlayerConfig.SetVisible then
-             -- Manual handling via loop or callback if dependency isnt built-in to AddRightGroupbox
-             -- But standard libraries handle dependencies on elements. Groupboxes often don't support dependencies directly.
-             -- Instead, we can hide the elements inside.
-             
-             local function UpdateVisibility()
-                 local visible = self.Library.Toggles.SaveManager_PerPlayerConfig.Value
-                 playerGroup.Visible = visible -- Most modified libraries support .Visible on the groupbox table
-                 -- If the library doesn't support groupbox.Visible, we would iterate elements.
-                 -- Assuming modern library fork here:
-                 if getattr and getattr(playerGroup, "SetVisible") then
-                    playerGroup:SetVisible(visible)
-                 elseif playerGroup.Frame then -- Raw UI access
-                    playerGroup.Frame.Visible = visible
-                 end
-             end
-             
-             -- Hook into the toggle callback
-             local oldCallback = self.Library.Toggles.SaveManager_PerPlayerConfig.Callback
-             self.Library.Toggles.SaveManager_PerPlayerConfig:OnChanged(function()
-                 UpdateVisibility()
-                 if oldCallback then oldCallback(self.Library.Toggles.SaveManager_PerPlayerConfig.Value) end
-             end)
-             
-             -- Init
-             UpdateVisibility()
-        end
-
-        self:SetIgnoreIndexes({ "SaveManager_ConfigList", "SaveManager_ConfigName", "SaveManager_AutoloadTarget", "SaveManager_PlayerInput", "SaveManager_PerPlayerConfig" })
+        self:SetIgnoreIndexes({ "SaveManager_ConfigList", "SaveManager_ConfigName", "SaveManager_AutoloadTarget", "SaveManager_PlayerInput" })
     end
 
     SaveManager:BuildFolderTree()
