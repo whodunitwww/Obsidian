@@ -1,10 +1,10 @@
 local cloneref = (cloneref or clonereference or function(instance: any) return instance end)
 local httpService = cloneref(game:GetService("HttpService"))
+local Players = cloneref(game:GetService("Players"))
 local isfolder, isfile, listfiles = isfolder, isfile, listfiles
 
 if typeof(copyfunction) == "function" then
     -- Fix is_____ functions for shitsploits, those functions should never error, only return a boolean.
-
     local
         isfolder_copy,
         isfile_copy,
@@ -37,6 +37,7 @@ local SaveManager = {} do
     SaveManager.SubFolder = ""
     SaveManager.Ignore = {}
     SaveManager.Library = nil
+    SaveManager.PlayerConfigs = {} -- Cache for player specific configs
     SaveManager.Parser = {
         Toggle = {
             Save = function(idx, object)
@@ -290,7 +291,6 @@ local SaveManager = {} do
                 local file = list[i]
                 if file:sub(-5) == ".json" then
                     -- i hate this but it has to be done ...
-
                     local pos = file:find(".json", 1, true)
                     local start = pos
 
@@ -301,7 +301,10 @@ local SaveManager = {} do
                     end
 
                     if char == "/" or char == "\\" then
-                        table.insert(out, file:sub(pos + 1, start - 1))
+                        local cfgName = file:sub(pos + 1, start - 1)
+                        if cfgName ~= "autoload_players" then -- Exclude our internal file
+                            table.insert(out, cfgName)
+                        end
                     end
                 end
             end
@@ -322,10 +325,58 @@ local SaveManager = {} do
         return data
     end
 
+    --// Player Autoload Helpers \\--
+    function SaveManager:GetPlayerConfigPath()
+        local path = self.Folder .. "/settings/autoload_players.json"
+        if SaveManager:CheckSubFolder(true) then
+            path = self.Folder .. "/settings/" .. self.SubFolder .. "/autoload_players.json"
+        end
+        return path
+    end
+
+    function SaveManager:LoadPlayerConfigs()
+        local path = self:GetPlayerConfigPath()
+        if isfile(path) then
+            local success, decoded = pcall(httpService.JSONDecode, httpService, readfile(path))
+            if success and type(decoded) == "table" then
+                self.PlayerConfigs = decoded
+            else
+                self.PlayerConfigs = {}
+            end
+        else
+            self.PlayerConfigs = {}
+        end
+        return self.PlayerConfigs
+    end
+
+    function SaveManager:SavePlayerConfigs()
+        local path = self:GetPlayerConfigPath()
+        local success, encoded = pcall(httpService.JSONEncode, httpService, self.PlayerConfigs)
+        if success then
+            writefile(path, encoded)
+        end
+        return success
+    end
+
     --// Auto Load \\--
     function SaveManager:GetAutoloadConfig()
         SaveManager:CheckFolderTree()
 
+        -- 1. Check for Per-Player Config if enabled
+        local useMultiUser = false
+        if self.Library and self.Library.Toggles.SaveManager_PerPlayerConfig then
+            useMultiUser = self.Library.Toggles.SaveManager_PerPlayerConfig.Value
+        end
+
+        if useMultiUser then
+            self:LoadPlayerConfigs()
+            local localPlayerName = Players.LocalPlayer.Name
+            if self.PlayerConfigs[localPlayerName] and self.PlayerConfigs[localPlayerName] ~= "" then
+                return self.PlayerConfigs[localPlayerName]
+            end
+        end
+
+        -- 2. Fallback to Global Autoload
         local autoLoadPath = self.Folder .. "/settings/autoload.txt"
         if SaveManager:CheckSubFolder(true) then
             autoLoadPath = self.Folder .. "/settings/" .. self.SubFolder .. "/autoload.txt"
@@ -333,10 +384,7 @@ local SaveManager = {} do
 
         if isfile(autoLoadPath) then
             local successRead, name = pcall(readfile, autoLoadPath)
-            if not successRead then
-                return "none"
-            end
-
+            if not successRead then return "none" end
             name = tostring(name)
             return if name == "" then "none" else name
         end
@@ -347,52 +395,64 @@ local SaveManager = {} do
     function SaveManager:LoadAutoloadConfig()
         SaveManager:CheckFolderTree()
 
-        local autoLoadPath = self.Folder .. "/settings/autoload.txt"
-        if SaveManager:CheckSubFolder(true) then
-            autoLoadPath = self.Folder .. "/settings/" .. self.SubFolder .. "/autoload.txt"
-        end
-
-        if isfile(autoLoadPath) then
-            local successRead, name = pcall(readfile, autoLoadPath)
-            if not successRead then
-                return self.Library:Notify("Failed to load autoload config: write file error")
-            end
-
-            local success, err = self:Load(name)
+        -- Determine which config to load (User specific or Global)
+        local configName = self:GetAutoloadConfig()
+        
+        if configName ~= "none" then
+            local success, err = self:Load(configName)
             if not success then
                 return self.Library:Notify("Failed to load autoload config: " .. err)
             end
-
-            self.Library:Notify(string.format("Auto loaded config %q", name))
+            self.Library:Notify(string.format("Auto loaded config %q", configName))
         end
     end
 
-    function SaveManager:SaveAutoloadConfig(name)
+    function SaveManager:SaveAutoloadConfig(name, target)
         SaveManager:CheckFolderTree()
 
-        local autoLoadPath = self.Folder .. "/settings/autoload.txt"
-        if SaveManager:CheckSubFolder(true) then
-            autoLoadPath = self.Folder .. "/settings/" .. self.SubFolder .. "/autoload.txt"
+        if target and target ~= "Global" then
+            -- Save for specific player
+            self:LoadPlayerConfigs() -- Refresh first
+            self.PlayerConfigs[target] = name
+            if not self:SavePlayerConfigs() then
+                return false, "write file error (player)"
+            end
+            return true, ""
+        else
+            -- Save Global
+            local autoLoadPath = self.Folder .. "/settings/autoload.txt"
+            if SaveManager:CheckSubFolder(true) then
+                autoLoadPath = self.Folder .. "/settings/" .. self.SubFolder .. "/autoload.txt"
+            end
+
+            local success = pcall(writefile, autoLoadPath, name)
+            if not success then return false, "write file error" end
+            return true, ""
         end
-
-        local success = pcall(writefile, autoLoadPath, name)
-        if not success then return false, "write file error" end
-
-        return true, ""
     end
 
-    function SaveManager:DeleteAutoLoadConfig()
+    function SaveManager:DeleteAutoLoadConfig(target)
         SaveManager:CheckFolderTree()
 
-        local autoLoadPath = self.Folder .. "/settings/autoload.txt"
-        if SaveManager:CheckSubFolder(true) then
-            autoLoadPath = self.Folder .. "/settings/" .. self.SubFolder .. "/autoload.txt"
+        if target and target ~= "Global" then
+            -- Clear for specific player (set to empty string, keeping them in list)
+            self:LoadPlayerConfigs()
+            if self.PlayerConfigs[target] then
+                self.PlayerConfigs[target] = "" -- Empty string means no config assigned
+                self:SavePlayerConfigs()
+            end
+            return true, ""
+        else
+            -- Delete Global
+            local autoLoadPath = self.Folder .. "/settings/autoload.txt"
+            if SaveManager:CheckSubFolder(true) then
+                autoLoadPath = self.Folder .. "/settings/" .. self.SubFolder .. "/autoload.txt"
+            end
+
+            local success = pcall(delfile, autoLoadPath)
+            if not success then return false, "delete file error" end
+            return true, ""
         end
-
-        local success = pcall(delfile, autoLoadPath)
-        if not success then return false, "delete file error" end
-
-        return true, ""
     end
 
     --// GUI \\--
@@ -462,31 +522,139 @@ local SaveManager = {} do
             self.Library.Options.SaveManager_ConfigList:SetValue(nil)
         end)
 
+        section:AddDivider()
+        
+        --// Autoload Logic \\--
+        
+        -- Helper to get dropdown values for players
+        local function GetAutoloadTargets()
+            local targets = { "Global" }
+            self:LoadPlayerConfigs()
+            for name, _ in pairs(self.PlayerConfigs) do
+                table.insert(targets, name)
+            end
+            return targets
+        end
+
+        section:AddDropdown("SaveManager_AutoloadTarget", { Text = "Autoload Target", Values = GetAutoloadTargets(), Default = "Global", AllowNull = false })
+        
         section:AddButton("Set as autoload", function()
             local name = self.Library.Options.SaveManager_ConfigList.Value
+            local target = self.Library.Options.SaveManager_AutoloadTarget.Value
 
-            local success, err = self:SaveAutoloadConfig(name)
+            if name == nil then 
+                return self.Library:Notify("No config selected to set as autoload")
+            end
+
+            local success, err = self:SaveAutoloadConfig(name, target)
             if not success then
                 return self.Library:Notify("Failed to set autoload config: " .. err)
             end
 
-            SaveManager.AutoloadLabel:SetText("Current autoload config: " .. name)
-            self.Library:Notify(string.format("Set %q to auto load", name))
+            self.Library:Notify(string.format("Set %q to auto load for %s", name, target))
+            SaveManager.AutoloadLabel:SetText("Current autoload config: " .. self:GetAutoloadConfig())
         end)
+
         section:AddButton("Reset autoload", function()
-            local success, err = self:DeleteAutoLoadConfig()
+            local target = self.Library.Options.SaveManager_AutoloadTarget.Value
+            local success, err = self:DeleteAutoLoadConfig(target)
             if not success then
-                return self.Library:Notify("Failed to set autoload config: " .. err)
+                return self.Library:Notify("Failed to reset autoload config: " .. err)
             end
 
-            self.Library:Notify("Set autoload to none")
-            SaveManager.AutoloadLabel:SetText("Current autoload config: none")
+            self.Library:Notify("Reset autoload for " .. target)
+            SaveManager.AutoloadLabel:SetText("Current autoload config: " .. self:GetAutoloadConfig())
         end)
 
         self.AutoloadLabel = section:AddLabel("Current autoload config: " .. self:GetAutoloadConfig(), true)
 
-        -- self:LoadAutoloadConfig()
-        self:SetIgnoreIndexes({ "SaveManager_ConfigList", "SaveManager_ConfigName" })
+        section:AddDivider()
+
+        --// Multi-User Configs Toggle \\--
+        section:AddToggle("SaveManager_PerPlayerConfig", {
+            Text = "Per-Player Configs",
+            Default = false,
+            Tooltip = "Enable specific autoload configs for different usernames.",
+            Callback = function(val)
+                -- Refresh label when toggled
+                if SaveManager.AutoloadLabel then
+                    SaveManager.AutoloadLabel:SetText("Current autoload config: " .. self:GetAutoloadConfig())
+                end
+            end
+        })
+
+        -- Groupbox for Player Management (Visible only when toggle is on)
+        local playerGroup = tab:AddRightGroupbox("Player Management", "users")
+        
+        playerGroup:AddInput("SaveManager_PlayerInput", { Text = "Username" })
+        
+        playerGroup:AddButton("Add User to List", function()
+            local username = self.Library.Options.SaveManager_PlayerInput.Value
+            if username:gsub(" ", "") == "" then
+                return self.Library:Notify("Invalid username")
+            end
+
+            self:LoadPlayerConfigs()
+            if not self.PlayerConfigs[username] then
+                self.PlayerConfigs[username] = "" -- Add with empty config
+                self:SavePlayerConfigs()
+                self.Library.Options.SaveManager_AutoloadTarget:SetValues(GetAutoloadTargets())
+                self.Library:Notify("Added " .. username .. " to player list")
+            else
+                self.Library:Notify("User already in list")
+            end
+        end)
+
+        playerGroup:AddButton("Remove User from List", function()
+            local target = self.Library.Options.SaveManager_AutoloadTarget.Value
+            if target == "Global" then
+                return self.Library:Notify("Cannot remove Global from list")
+            end
+
+            self:LoadPlayerConfigs()
+            if self.PlayerConfigs[target] ~= nil then
+                self.PlayerConfigs[target] = nil -- Remove key
+                self:SavePlayerConfigs()
+                self.Library.Options.SaveManager_AutoloadTarget:SetValues(GetAutoloadTargets())
+                self.Library.Options.SaveManager_AutoloadTarget:SetValue("Global")
+                self.Library:Notify("Removed " .. target .. " from list")
+            else
+                self.Library:Notify("User not found in list")
+            end
+        end)
+
+        -- Link visibility of Player Management group to the toggle
+        -- We rely on the DependencyBox feature if available, or manual handling
+        -- Assuming standard Linoria/Obsidian dependency behavior:
+        if self.Library.Toggles.SaveManager_PerPlayerConfig.SetVisible then
+             -- Manual handling via loop or callback if dependency isnt built-in to AddRightGroupbox
+             -- But standard libraries handle dependencies on elements. Groupboxes often don't support dependencies directly.
+             -- Instead, we can hide the elements inside.
+             
+             local function UpdateVisibility()
+                 local visible = self.Library.Toggles.SaveManager_PerPlayerConfig.Value
+                 playerGroup.Visible = visible -- Most modified libraries support .Visible on the groupbox table
+                 -- If the library doesn't support groupbox.Visible, we would iterate elements.
+                 -- Assuming modern library fork here:
+                 if getattr and getattr(playerGroup, "SetVisible") then
+                    playerGroup:SetVisible(visible)
+                 elseif playerGroup.Frame then -- Raw UI access
+                    playerGroup.Frame.Visible = visible
+                 end
+             end
+             
+             -- Hook into the toggle callback
+             local oldCallback = self.Library.Toggles.SaveManager_PerPlayerConfig.Callback
+             self.Library.Toggles.SaveManager_PerPlayerConfig:OnChanged(function()
+                 UpdateVisibility()
+                 if oldCallback then oldCallback(self.Library.Toggles.SaveManager_PerPlayerConfig.Value) end
+             end)
+             
+             -- Init
+             UpdateVisibility()
+        end
+
+        self:SetIgnoreIndexes({ "SaveManager_ConfigList", "SaveManager_ConfigName", "SaveManager_AutoloadTarget", "SaveManager_PlayerInput", "SaveManager_PerPlayerConfig" })
     end
 
     SaveManager:BuildFolderTree()
